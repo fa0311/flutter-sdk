@@ -315,8 +315,9 @@ jobs:
           fi
 
           TARGET_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${SOURCE_BRANCH}" --jq .object.sha)"
+          DART_MINOR="${DART_VERSION%.*}"
           FLUTTER_VERSIONS="$(awk -v v="${DART_VERSION}" '$1 == v { $1 = ""; sub(/^ /, ""); print }' emudhra/flutter_versions.txt)"
-          [ -n "${FLUTTER_VERSIONS}" ] || FLUTTER_VERSIONS="(no Flutter stable release bundles this exact Dart version)"
+          [ -n "${FLUTTER_VERSIONS}" ] || FLUTTER_VERSIONS="(no Flutter stable release bundles Dart ${DART_MINOR}.x)"
           BORINGSSL_REV="$(gh api "repos/${GITHUB_REPOSITORY}/contents/DEPS?ref=${SOURCE_BRANCH}" --jq .content | base64 -d | grep -oE '"boringssl_rev": "[0-9a-f]+"' | grep -oE '[0-9a-f]{40}')"
 
           {
@@ -343,7 +344,9 @@ jobs:
             echo
             echo "## Flutter"
             echo
-            echo "Flutter stable releases that bundle Dart ${DART_VERSION}: ${FLUTTER_VERSIONS}"
+            echo "This is the newest ${DART_MINOR}.x patch release, so it is the build to use for every Flutter stable"
+            echo "release on the Dart ${DART_MINOR}.x line (bundled Dart version in parentheses):"
+            echo "${FLUTTER_VERSIONS}"
             echo
             echo "Replacing \`flutter/bin/cache/dart-sdk\` with one of these zips fixes the \`dart\` / \`flutter\` command line tools"
             echo "and standalone Dart programs. It does **not** change Flutter *apps*: on Android, iOS and desktop the"

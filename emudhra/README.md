@@ -1,17 +1,21 @@
 # eMudhra patch builds of the Dart SDK stable releases
 
 **Unofficial.** This fork of [dart-lang/sdk](https://github.com/dart-lang/sdk)
-rebuilds every Dart stable release of the past year (3.10.0 … 3.13.7) with the
-two security fixes that upstream shipped in Dart 3.13.7 in response to the
-compromised eMudhra (emSign) intermediate CA keys. It is not produced or
+rebuilds the newest patch release of each Dart stable line of the past year
+(3.10.9, 3.11.6, 3.12.2 and 3.13.7) with the two security fixes that upstream
+shipped in Dart 3.13.7 in response to the compromised eMudhra (emSign)
+intermediate CA keys. Older patch releases of the same line (3.10.0 … 3.10.8,
+…) are superseded by these builds and are not built separately. It is not produced or
 endorsed by Google or the Dart team.
 
 ## 日本語サマリ
 
 - **何をしたか**: eMudhra (emSign) の中間 CA 秘密鍵漏洩への対応として Dart 3.13.7
   に入った 2 件の修正（Android 14+ での Conscrypt APEX ルートストア利用、侵害された
-  中間 CA をブロックする BoringSSL への roll）を、過去 1 年分の stable タグ
-  (3.10.0〜3.13.7) に cherry-pick し、GitHub Actions でビルドして Releases に置く。
+  中間 CA をブロックする BoringSSL への roll）を、過去 1 年分の各 stable 系列の
+  最新パッチ版 (3.10.9 / 3.11.6 / 3.12.2 / 3.13.7) に cherry-pick し、GitHub Actions
+  でビルドして Releases に置く。同じ系列の古いパッチ版 (3.10.0〜3.10.8 など) は
+  最新パッチ版で代替できるため個別には作らない。
 - **ブランチ**: `stable-<version>-emudhra` = upstream タグ `<version>` + 2 コミット。
   `git diff <version> stable-<version>-emudhra` で差分を確認できる。
 - **成果物**: Release `<version>-emudhra` に公式と同じ名前の
@@ -52,40 +56,23 @@ date identify the patched build).
 
 ## Versions, branches and releases
 
-`emudhra/VERSIONS` lists the Dart stable tags released between 2025-10-23 and
-2026-10-23. `emudhra/flutter_versions.txt` maps each of them to the Flutter
-stable releases that bundle it (from Flutter's `releases_linux.json`).
+`emudhra/VERSIONS` lists the newest patch release of every Dart stable line
+that had a release between 2025-10-23 and 2026-10-23. Because a newer patch
+release supersedes the older ones of the same line, each build is the one to
+use for *every* Flutter stable release on that Dart minor line.
+`emudhra/flutter_versions.txt` maps each build to those Flutter releases (from
+Flutter's `releases_linux.json`).
 
-| Dart | Flutter stable | Branch | Release |
-|------|----------------|--------|---------|
-| 3.10.0 | 3.38.0 – 3.38.2 | `stable-3.10.0-emudhra` | `3.10.0-emudhra` |
-| 3.10.1 | 3.38.3 | `stable-3.10.1-emudhra` | `3.10.1-emudhra` |
-| 3.10.2 | – | `stable-3.10.2-emudhra` | `3.10.2-emudhra` |
-| 3.10.3 | 3.38.4 | `stable-3.10.3-emudhra` | `3.10.3-emudhra` |
-| 3.10.4 | 3.38.5 | `stable-3.10.4-emudhra` | `3.10.4-emudhra` |
-| 3.10.5 | – | `stable-3.10.5-emudhra` | `3.10.5-emudhra` |
-| 3.10.6 | – | `stable-3.10.6-emudhra` | `3.10.6-emudhra` |
-| 3.10.7 | 3.38.6 – 3.38.8 | `stable-3.10.7-emudhra` | `3.10.7-emudhra` |
-| 3.10.8 | 3.38.9 | `stable-3.10.8-emudhra` | `3.10.8-emudhra` |
-| 3.10.9 | 3.38.10 | `stable-3.10.9-emudhra` | `3.10.9-emudhra` |
-| 3.11.0 | 3.41.0 – 3.41.2 | `stable-3.11.0-emudhra` | `3.11.0-emudhra` |
-| 3.11.1 | 3.41.3, 3.41.4 | `stable-3.11.1-emudhra` | `3.11.1-emudhra` |
-| 3.11.2 | – | `stable-3.11.2-emudhra` | `3.11.2-emudhra` |
-| 3.11.3 | 3.41.5 | `stable-3.11.3-emudhra` | `3.11.3-emudhra` |
-| 3.11.4 | 3.41.6 | `stable-3.11.4-emudhra` | `3.11.4-emudhra` |
-| 3.11.5 | 3.41.7 – 3.41.9 | `stable-3.11.5-emudhra` | `3.11.5-emudhra` |
-| 3.11.6 | – | `stable-3.11.6-emudhra` | `3.11.6-emudhra` |
-| 3.12.0 | 3.44.0 | `stable-3.12.0-emudhra` | `3.12.0-emudhra` |
-| 3.12.1 | 3.44.1 | `stable-3.12.1-emudhra` | `3.12.1-emudhra` |
-| 3.12.2 | 3.44.2 – 3.44.9 | `stable-3.12.2-emudhra` | `3.12.2-emudhra` |
-| 3.13.0 | 3.47.0 | `stable-3.13.0-emudhra` | `3.13.0-emudhra` |
-| 3.13.1 | 3.47.1 | `stable-3.13.1-emudhra` | `3.13.1-emudhra` |
-| 3.13.2 | 3.47.2 | `stable-3.13.2-emudhra` | `3.13.2-emudhra` |
-| 3.13.3 | 3.47.3, 3.47.4 | `stable-3.13.3-emudhra` | `3.13.3-emudhra` |
-| 3.13.4 | 3.47.5 | `stable-3.13.4-emudhra` | `3.13.4-emudhra` |
-| 3.13.5 | 3.47.6, 3.47.7 | `stable-3.13.5-emudhra` | `3.13.5-emudhra` |
-| 3.13.6 | – | `stable-3.13.6-emudhra` | `3.13.6-emudhra` |
-| 3.13.7 | – (already fixed upstream; rebuilt unchanged) | `stable-3.13.7-emudhra` | `3.13.7-emudhra` |
+| Dart build | Covers Flutter stable (bundled Dart) | Branch | Release |
+|------------|--------------------------------------|--------|---------|
+| 3.10.9 | 3.38.0 – 3.38.10 (Dart 3.10.0 – 3.10.9) | `stable-3.10.9-emudhra` | `3.10.9-emudhra` |
+| 3.11.6 | 3.41.0 – 3.41.9 (Dart 3.11.0 – 3.11.5) | `stable-3.11.6-emudhra` | `3.11.6-emudhra` |
+| 3.12.2 | 3.44.0 – 3.44.9 (Dart 3.12.0 – 3.12.2) | `stable-3.12.2-emudhra` | `3.12.2-emudhra` |
+| 3.13.7 | 3.47.0 – 3.47.7 (Dart 3.13.0 – 3.13.5) — already fixed upstream, rebuilt unchanged | `stable-3.13.7-emudhra` | `3.13.7-emudhra` |
+
+Any other version can be produced the same way: add it to `emudhra/VERSIONS`
+(or pass it on the command line), run `emudhra/make_branches.sh <version>`,
+push the branch and dispatch the workflow.
 
 ## Using a build
 
@@ -94,7 +81,8 @@ top-level `dart-sdk/` directory, the same layout as the official downloads.
 
 - **Standalone Dart**: unzip and put `dart-sdk/bin` on `PATH`.
 - **Flutter tooling**: replace `<flutter>/bin/cache/dart-sdk` with the
-  `dart-sdk/` directory of the matching Dart version (see the table). This
+  `dart-sdk/` directory of the build for your Flutter release's Dart minor
+  line (see the table; e.g. Flutter 3.38.x → 3.10.9). This
   fixes the `dart` and `flutter` command line tools, `pub`, the analyzer, etc.
 - **Flutter apps**: not fixed by this. On Android, iOS, macOS, Windows and
   Linux the `dart:io` networking code runs inside the Flutter engine

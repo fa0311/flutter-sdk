@@ -1,30 +1,8 @@
-# Dart SDK stable tags released between 2025-10-23 and 2026-10-23 (one year),
-# oldest first. One line per version. Lines starting with '#' are ignored.
-3.10.0
-3.10.1
-3.10.2
-3.10.3
-3.10.4
-3.10.5
-3.10.6
-3.10.7
-3.10.8
+# Dart stable versions to patch: the newest patch release of every minor line
+# that had a stable release between 2025-10-23 and 2026-10-23. Older patch
+# releases of the same line (3.10.0 .. 3.10.8, ...) are superseded by these.
+# One version per line; lines starting with '#' are ignored.
 3.10.9
-3.11.0
-3.11.1
-3.11.2
-3.11.3
-3.11.4
-3.11.5
 3.11.6
-3.12.0
-3.12.1
 3.12.2
-3.13.0
-3.13.1
-3.13.2
-3.13.3
-3.13.4
-3.13.5
-3.13.6
 3.13.7
