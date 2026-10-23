@@ -1,0 +1,12 @@
+# mise configuration for the patched Dart SDK (copy into your mise.toml).
+# mise's registry `dart` is itself an `http:` tool, so this replaces it with the
+# zips from https://github.com/fa0311/flutter-sdk-eMudhra/releases.
+# Versions are the upstream numbers: 3.10.9, 3.11.6, 3.12.2, 3.13.7.
+[tools."http:dart"]
+version = "3.13.7"
+url = "https://github.com/fa0311/flutter-sdk-eMudhra/releases/download/{{ version }}-emudhra/dartsdk-{{ os() }}-{{ arch() }}-release.zip"
+bin_path = "dart-sdk/bin"
+# Optional, if you want `mise ls-remote http:dart` / `@latest` to see the patched releases:
+# version_list_url = "https://api.github.com/repos/fa0311/flutter-sdk-eMudhra/releases?per_page=100"
+# version_json_path = ".[].tag_name"
+# version_expr = 'map(filter(versions, { !hasPrefix(#, "flutter-") }), { trimSuffix(#, "-emudhra") }) | sortVersions()'

@@ -371,6 +371,17 @@ jobs:
             echo "\`dart:io\` TLS code is compiled into the Flutter engine. Rebuilt engines are published separately as"
             echo "\`flutter-<version>-emudhra\` releases (see emudhra/README.md)."
             echo
+            echo "## Install with mise"
+            echo
+            echo "Add this to \`mise.toml\` (mise's registry \`dart\` is itself an \`http:\` tool, so this replaces it with the patched build):"
+            echo
+            echo '```toml'
+            sed -E -e '/^#/d' -e '/^$/d' -e "s/^version = \".*\"/version = \"${DART_VERSION}\"/" emudhra/mise-dart.toml
+            echo '```'
+            echo
+            echo "Then \`mise install\`; \`mise exec -- dart --version\` prints the same string as the official ${DART_VERSION},"
+            echo "and \`python3 emudhra/check_blocklist.py \"\$(mise which dart)\"\` (from this repository) reports 8/8 for the patched build."
+            echo
             echo "## Files"
             echo
             echo '```'

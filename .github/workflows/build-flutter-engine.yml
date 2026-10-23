@@ -389,6 +389,21 @@ jobs:
             echo "flutter build apk --release    # with FLUTTER_STORAGE_BASE_URL still exported"
             echo '```'
             echo
+            echo "## Install with mise"
+            echo
+            echo "Keep the official Flutter SDK (mise's registry \`flutter\`) and take the engine from this mirror. Add this to \`mise.toml\`:"
+            echo
+            echo '```toml'
+            sed -E -e '/^#/d' -e "s/^flutter = \".*\"/flutter = \"${FLUTTER_VERSION}\"/" emudhra/mise-flutter.toml | sed -e '1{/^$/d}'
+            echo '```'
+            echo
+            echo '```sh'
+            echo "mise install"
+            echo "mise run emudhra-mirror        # terminal 1: downloads this mirror once, then serves it (keep running)"
+            echo "flutter precache --android     # terminal 2, in the project directory"
+            echo "flutter build apk --release"
+            echo '```'
+            echo
             echo "The mirror directory can also be uploaded to any static host and used as \`FLUTTER_STORAGE_BASE_URL\`"
             echo "directly, as long as that host also has the artifacts that were not rebuilt (or proxies to the official storage)."
             echo
