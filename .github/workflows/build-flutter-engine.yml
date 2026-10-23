@@ -377,30 +377,35 @@ jobs:
             echo "## How to use"
             echo
             echo '```sh'
-            echo "# 1. unpack the mirror"
-            echo "mkdir mirror && tar -xf ${TAR_NAME} -C mirror     # (cat *.part > ${TAR_NAME} first if it was split)"
-            echo "# 2. serve it locally; anything not in the mirror is fetched from storage.googleapis.com"
-            echo "python3 flutter_mirror.py --dir mirror --port 8181 &   # from emudhra/ in this repo"
+            echo "# 1. serve the mirror (downloaded once into ~/.cache/emudhra-flutter-mirror; anything not in it is fetched from storage.googleapis.com)"
+            echo "curl -fsSLO https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/emudhra/flutter_mirror.py"
+            echo "python3 flutter_mirror.py --release ${FLUTTER_VERSION} &"
             echo "export FLUTTER_STORAGE_BASE_URL=http://127.0.0.1:8181"
-            echo "# 3. make the flutter tool and Gradle re-download the engine artifacts"
-            echo "rm -rf \"\$FLUTTER_ROOT/bin/cache/artifacts/engine\" \"\$FLUTTER_ROOT/bin/cache\"/*.stamp"
-            echo "rm -rf ~/.gradle/caches/modules-2/files-2.1/io.flutter ~/.gradle/caches/modules-2/metadata-*/descriptors/io.flutter"
-            echo "flutter precache --android --linux"
-            echo "flutter build apk --release    # with FLUTTER_STORAGE_BASE_URL still exported"
+            echo "# 2. make flutter fetch the engine artifacts and bin/cache/dart-sdk from it"
+            echo "rm -f \"\$FLUTTER_ROOT/bin/cache/engine-dart-sdk.stamp\""
+            echo "flutter precache --force --android   # engine artifacts"
+            echo "flutter --version                    # the next command re-fetches bin/cache/dart-sdk"
+            echo "# 3. build as usual (keep FLUTTER_STORAGE_BASE_URL exported)"
+            echo "flutter build apk --release"
             echo '```'
+            echo
+            echo "If you built Android apps with the official engine before, also delete Gradle's copy of the Maven artifacts"
+            echo "(same coordinates as the patched ones): \`rm -rf ~/.gradle/caches/modules-2/files-2.1/io.flutter ~/.gradle/caches/modules-2/metadata-*/descriptors/io.flutter\`."
             echo
             echo "## Install with mise"
             echo
             echo "Keep the official Flutter SDK (mise's registry \`flutter\`) and take the engine from this mirror. Add this to \`mise.toml\`:"
             echo
             echo '```toml'
-            sed -E -e '/^#/d' -e "s/^flutter = \".*\"/flutter = \"${FLUTTER_VERSION}\"/" emudhra/mise-flutter.toml | sed -e '1{/^$/d}'
+            sed -E -e '/^#/d' -e "s/^flutter = \".*\"/flutter = \"${FLUTTER_VERSION}\"/" -e "s/--release [0-9.]+/--release ${FLUTTER_VERSION}/" emudhra/mise-flutter.toml | sed -e '1{/^$/d}'
             echo '```'
             echo
             echo '```sh'
             echo "mise install"
-            echo "mise run emudhra-mirror        # terminal 1: downloads this mirror once, then serves it (keep running)"
-            echo "flutter precache --android     # terminal 2, in the project directory"
+            echo "mise run emudhra-mirror                                        # terminal 1: keep it running while you use flutter"
+            echo "rm -f \"\$(mise where flutter)/bin/cache/engine-dart-sdk.stamp\"  # terminal 2, once"
+            echo "flutter precache --force --android                             # engine artifacts from the mirror"
+            echo "flutter --version                                              # re-fetches bin/cache/dart-sdk"
             echo "flutter build apk --release"
             echo '```'
             echo

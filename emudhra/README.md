@@ -273,43 +273,34 @@ macOS delegate verification to Apple's Security framework and need nothing).
 ### Using a patched engine
 
 ```sh
-# 1. unpack the mirror tar from the release
-mkdir mirror && tar -xf flutter-engine-3.47.7-emudhra-mirror.tar -C mirror
-
-# 2. serve it; anything that is not in the mirror (fonts, gradle wrapper, ...)
-#    is fetched from storage.googleapis.com on demand and cached
-python3 emudhra/flutter_mirror.py --dir mirror --port 8181 &
+# 1. serve the mirror of the release for your Flutter version (downloaded once
+#    into ~/.cache/emudhra-flutter-mirror; anything not in it, such as fonts or
+#    the gradle wrapper, is fetched from storage.googleapis.com on demand)
+python3 emudhra/flutter_mirror.py --release 3.47.7 &
 export FLUTTER_STORAGE_BASE_URL=http://127.0.0.1:8181
 
-# 3. drop the official engine artifacts the tool and Gradle already cached
-rm -rf "$FLUTTER_ROOT/bin/cache/artifacts/engine" "$FLUTTER_ROOT/bin/cache"/*.stamp
-rm -rf ~/.gradle/caches/modules-2/files-2.1/io.flutter \
-       ~/.gradle/caches/modules-2/metadata-*/descriptors/io.flutter
+# 2. make flutter fetch the engine artifacts and bin/cache/dart-sdk from it
+rm -f "$FLUTTER_ROOT/bin/cache/engine-dart-sdk.stamp"
+flutter precache --force --android --linux   # engine artifacts
+flutter --version                            # the next command re-fetches bin/cache/dart-sdk
 
-# 4. re-download from the mirror and build
-flutter precache --android --linux
-flutter build apk --release        # keep FLUTTER_STORAGE_BASE_URL exported
+# 3. build as usual (keep FLUTTER_STORAGE_BASE_URL exported)
+flutter build apk --release
+python3 emudhra/check_blocklist.py build/app/outputs/flutter-apk/app-release.apk
 ```
 
-Step 3 matters: the Flutter Gradle plugin resolves `io.flutter:arm64_v8a_release:1.0.0-<hash>`
-from `$FLUTTER_STORAGE_BASE_URL/download.flutter.io`, and Gradle will happily
-reuse an official jar it cached earlier under the same coordinates.
+`flutter precache --force` re-downloads the engine artifacts and clears the
+tool stamps, so the next `flutter` command runs the SDK update again; with
+`engine-dart-sdk.stamp` removed that update re-downloads `bin/cache/dart-sdk`.
+If you built Android apps with the official engine before, also
+delete Gradle's copy of the Maven artifacts, which share their coordinates with
+the patched ones:
+`rm -rf ~/.gradle/caches/modules-2/files-2.1/io.flutter ~/.gradle/caches/modules-2/metadata-*/descriptors/io.flutter`.
 
-If you have your own static hosting, upload the `mirror/` directory there and
-point `FLUTTER_STORAGE_BASE_URL` at it; the host must then also serve (or
-proxy) the artifacts that were not rebuilt.
-
-### Verified end to end
-
-With an unmodified Flutter 3.47.7 SDK, `FLUTTER_STORAGE_BASE_URL` pointing at
-`flutter_mirror.py` serving the `flutter-3.47.7-emudhra` mirror tar, and the
-caches purged as above: `flutter --version` installed the patched
-`bin/cache/dart-sdk` (8/8), `flutter precache --android` took every engine
-artifact from the mirror (only `engine_stamp.json`, fonts and the gradle
-wrapper came from the official storage), Gradle resolved
-`io.flutter:arm64_v8a_release:1.0.0-<engine commit>` from the mirror, and the
-resulting `flutter build apk --release` APK contains a `libflutter.so` with all
-eight blocklist hashes.
+If you have your own static hosting, upload the extracted mirror directory
+(`~/.cache/emudhra-flutter-mirror/<version>/mirror`) there and point
+`FLUTTER_STORAGE_BASE_URL` at it; the host must then also serve (or proxy)
+the artifacts that were not rebuilt.
 
 ### Running the engine workflow
 
@@ -352,24 +343,31 @@ python3 emudhra/check_blocklist.py "$(mise where http:dart)/dart-sdk/bin/dart"  
 ```
 
 **Flutter** — keep the official SDK from mise's registry and take the engine
-from the mirror: `[env]` sets `FLUTTER_STORAGE_BASE_URL`, and the
-`emudhra-mirror` task (see `emudhra/mise-flutter.toml`) downloads the
-`flutter-<version>-emudhra` mirror tar once into
-`~/.cache/emudhra-flutter-mirror/<version>`, resets the engine artifacts
-Flutter already cached (including Gradle's `io.flutter` cache), and serves the
-mirror with `flutter_mirror.py`. Only Flutter versions with an engine release
-work: 3.47.7, 3.44.9, 3.41.9, 3.38.10.
+from the mirror: `[env]` sets `FLUTTER_STORAGE_BASE_URL`, and the one-line
+`emudhra-mirror` task runs `flutter_mirror.py --release <version>`, which
+downloads the mirror once and serves it. Only Flutter versions with an engine
+release work: 3.47.7, 3.44.9, 3.41.9, 3.38.10.
+
+```toml
+[tools]
+flutter = "3.47.7"
+
+[env]
+FLUTTER_STORAGE_BASE_URL = "http://127.0.0.1:8181"
+
+[tasks.emudhra-mirror]
+run = "curl -fsSL https://raw.githubusercontent.com/fa0311/flutter-sdk-eMudhra/main/emudhra/flutter_mirror.py | python3 - --release 3.47.7"
+```
 
 ```sh
 mise install
-mise run emudhra-mirror        # terminal 1: keep it running while you use flutter
-flutter precache --android     # terminal 2, in the project directory
+mise run emudhra-mirror                                        # terminal 1: keep it running while you use flutter
+rm -f "$(mise where flutter)/bin/cache/engine-dart-sdk.stamp"  # terminal 2, once
+flutter precache --force --android                             # engine artifacts from the mirror
+flutter --version                                              # re-fetches bin/cache/dart-sdk
 flutter build apk --release
 python3 emudhra/check_blocklist.py build/app/outputs/flutter-apk/app-release.apk
 ```
-
-Everything the mirror does not contain (fonts, the gradle wrapper, iOS/macOS
-artifacts, ...) is fetched from the official storage by the proxy.
 
 ## Scripts in this directory
 
@@ -383,6 +381,6 @@ artifacts, ...) is fetched from the official storage by the proxy.
 | `flutter_engines.txt` | Flutter stable version → engine commit → pinned Dart version (engine workflow) |
 | `engine_build_config.py` | reads gn flags / ninja targets of an engine config from `ci/builders/*.json` |
 | `make_mirror.py` | arranges engine `zip_archives` into the `flutter_infra_release` / `download.flutter.io` layout |
-| `flutter_mirror.py` | local `FLUTTER_STORAGE_BASE_URL` server with fallback to the official storage |
+| `flutter_mirror.py` | fetches a `flutter-<version>-emudhra` mirror (`--release`) and serves it as `FLUTTER_STORAGE_BASE_URL`, with fallback to the official storage |
 | `check_blocklist.py` | verifies that a binary / zip contains BoringSSL's blocklist of the eight compromised keys |
 | `mise-dart.toml`, `mise-flutter.toml` | mise configuration templates; the workflows embed them, with the release's version, in the release notes |

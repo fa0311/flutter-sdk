@@ -1,13 +1,13 @@
 # mise configuration for Flutter with the patched engine (copy into your mise.toml).
-# The Flutter SDK stays official (mise's registry `flutter`); the engine
-# artifacts, bin/cache/dart-sdk and the Android Maven artifacts come from the
-# patched mirror (release flutter-<version>-emudhra), which the `emudhra-mirror`
-# task downloads once and serves on localhost for FLUTTER_STORAGE_BASE_URL.
-# Flutter versions with an engine release: 3.47.7, 3.44.9, 3.41.9, 3.38.10.
+# The Flutter SDK stays official (mise's registry `flutter`); the engine artifacts,
+# bin/cache/dart-sdk and the Android Maven artifacts come from the patched mirror
+# (release flutter-<version>-emudhra) served on localhost by the task below.
 #
 #   mise install
-#   mise run emudhra-mirror      # terminal 1: download once, then serve (keep running)
-#   flutter precache --android   # terminal 2, in this directory
+#   mise run emudhra-mirror                                       # terminal 1: downloads the mirror once, then serves it
+#   rm -f "$(mise where flutter)/bin/cache/engine-dart-sdk.stamp"  # terminal 2, once
+#   flutter precache --force --android                            # engine artifacts from the mirror
+#   flutter --version                                             # re-fetches bin/cache/dart-sdk from the mirror
 #   flutter build apk --release
 [tools]
 flutter = "3.47.7"
@@ -16,40 +16,5 @@ flutter = "3.47.7"
 FLUTTER_STORAGE_BASE_URL = "http://127.0.0.1:8181"
 
 [tasks.emudhra-mirror]
-description = "Download the patched Flutter engine mirror for the pinned Flutter version, reset Flutter's cached engine artifacts, and serve the mirror on 127.0.0.1:8181 (keep it running while using flutter)"
-shell = "bash -c"
-run = '''
-set -euo pipefail
-VERSION="${EMUDHRA_FLUTTER_VERSION:-$(mise current flutter 2>/dev/null | head -1)}"
-[ -n "${VERSION}" ] || { echo "cannot determine the Flutter version; set EMUDHRA_FLUTTER_VERSION" >&2; exit 1; }
-PORT="${EMUDHRA_MIRROR_PORT:-8181}"
-RELEASE="https://github.com/fa0311/flutter-sdk-eMudhra/releases/download/flutter-${VERSION}-emudhra"
-RAW="https://raw.githubusercontent.com/fa0311/flutter-sdk-eMudhra/main/emudhra"
-DIR="${XDG_CACHE_HOME:-$HOME/.cache}/emudhra-flutter-mirror/${VERSION}"
-mkdir -p "${DIR}"
-
-if [ ! -f "${DIR}/.complete" ]; then
-  echo "downloading the Flutter ${VERSION} engine mirror from ${RELEASE} ..."
-  curl -fsSL "${RELEASE}/flutter-engine-${VERSION}-emudhra.sha256sum" -o "${DIR}/sha256sum.txt"
-  PARTS="$(grep -oE "flutter-engine-${VERSION}-emudhra-mirror\.tar(\.[0-9]+\.part)?" "${DIR}/sha256sum.txt" | sort -u)"
-  for p in ${PARTS}; do
-    [ -f "${DIR}/${p}" ] || curl -fL --progress-bar "${RELEASE}/${p}" -o "${DIR}/${p}"
-  done
-  if command -v sha256sum >/dev/null 2>&1; then SUM="sha256sum"; else SUM="shasum -a 256"; fi   # macOS has shasum
-  (cd "${DIR}" && grep -E 'mirror\.tar' sha256sum.txt | ${SUM} -c -)
-  rm -rf "${DIR}/mirror" && mkdir -p "${DIR}/mirror"
-  (cd "${DIR}" && cat ${PARTS} | tar -xf - -C mirror)
-  (cd "${DIR}" && rm -f ${PARTS})
-  touch "${DIR}/.complete"
-fi
-[ -f "${DIR}/flutter_mirror.py" ] || curl -fsSL "${RAW}/flutter_mirror.py" -o "${DIR}/flutter_mirror.py"
-
-# Make the flutter tool and Gradle fetch the engine artifacts again, from the mirror.
-FLUTTER_ROOT="$(cd "$(dirname "$(readlink -f "$(command -v flutter)")")/.." && pwd)"
-echo "resetting cached engine artifacts in ${FLUTTER_ROOT}/bin/cache"
-rm -rf "${FLUTTER_ROOT}/bin/cache/artifacts/engine" "${FLUTTER_ROOT}/bin/cache/dart-sdk" "${FLUTTER_ROOT}"/bin/cache/*.stamp
-rm -rf "${HOME}"/.gradle/caches/modules-2/files-2.1/io.flutter "${HOME}"/.gradle/caches/modules-2/metadata-*/descriptors/io.flutter
-
-echo "serving ${DIR}/mirror on http://127.0.0.1:${PORT} (FLUTTER_STORAGE_BASE_URL); press Ctrl-C to stop"
-exec python3 "${DIR}/flutter_mirror.py" --dir "${DIR}/mirror" --port "${PORT}"
-'''
+description = "Serve the patched Flutter engine mirror on 127.0.0.1:8181 (downloads it once; keep running while using flutter)"
+run = "curl -fsSL https://raw.githubusercontent.com/fa0311/flutter-sdk-eMudhra/main/emudhra/flutter_mirror.py | python3 - --release 3.47.7"
