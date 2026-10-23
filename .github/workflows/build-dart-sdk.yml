@@ -1,0 +1,371 @@
+# Builds one eMudhra-patched Dart SDK stable version on every supported
+# desktop platform and publishes the SDK zips as a GitHub release.
+#
+# Dispatch it once per version (see emudhra/dispatch.sh). Each run builds the
+# branch `stable-<version>-emudhra` (created by emudhra/make_branches.sh) and
+# publishes/updates the release `<version>-emudhra`.
+#
+# Artifacts follow the official naming (dartsdk-<os>-<arch>-release.zip with a
+# top-level dart-sdk/ directory) so they can be dropped in anywhere the official
+# zips are used, e.g. flutter/bin/cache/dart-sdk.
+name: Build Dart SDK (eMudhra patched)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Dart stable version to build, e.g. 3.10.9 (branch stable-<version>-emudhra)'
+        required: true
+        type: string
+      publish_release:
+        description: 'Create or update the GitHub release <version>-emudhra'
+        required: false
+        type: boolean
+        default: true
+
+run-name: Dart SDK ${{ inputs.version }} (eMudhra patched)
+
+concurrency:
+  group: build-${{ inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DART_VERSION: ${{ inputs.version }}
+  SOURCE_BRANCH: stable-${{ inputs.version }}-emudhra
+  RELEASE_TAG: ${{ inputs.version }}-emudhra
+  # depot_tools: don't self-update and don't nag about the git version.
+  DEPOT_TOOLS_UPDATE: '0'
+  GCLIENT_SUPPRESS_GIT_VERSION_WARNING: '1'
+  # Never try to use Google's remote build service.
+  RBE: '0'
+  DART_RBE: '0'
+
+jobs:
+  build-unix:
+    name: ${{ matrix.os_name }}-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os_name: linux
+            arch: x64
+            runner: ubuntu-24.04
+            out_dir: out/ReleaseX64
+          - os_name: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            out_dir: out/ReleaseARM64
+          - os_name: macos
+            arch: arm64
+            runner: macos-15
+            out_dir: xcodebuild/ReleaseARM64
+          - os_name: macos
+            arch: x64
+            runner: macos-15-intel
+            out_dir: xcodebuild/ReleaseX64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    steps:
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift \
+            /usr/local/share/boost /opt/microsoft /usr/lib/jvm /usr/local/julia* || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Install depot_tools
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Check out ${{ env.SOURCE_BRANCH }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOURCE_BRANCH }}
+          path: dart/sdk
+          persist-credentials: false
+
+      - name: Show what is being built
+        working-directory: dart/sdk
+        run: |
+          git log -3 --format='%H %an %s'
+          grep -E '"boringssl_rev"' DEPS
+          grep -E '^(CHANNEL|MAJOR|MINOR|PATCH) ' tools/VERSION
+
+      - name: gclient sync
+        working-directory: dart
+        run: |
+          cat > .gclient <<'EOF'
+          solutions = [
+            {
+              "name": "sdk",
+              "url": "https://github.com/fa0311/flutter-sdk-eMudhra.git",
+              "deps_file": "DEPS",
+              "managed": False,
+              "custom_deps": {},
+              "custom_vars": {
+                "download_reclient": False,
+              },
+            },
+          ]
+          EOF
+          gclient sync --no-history -D
+          du -sh "$PWD"
+
+      - name: Build create_sdk (${{ matrix.arch }})
+        working-directory: dart/sdk
+        run: ./tools/build.py --no-rbe --mode release --arch ${{ matrix.arch }} create_sdk
+
+      - name: Smoke test
+        working-directory: dart/sdk/${{ matrix.out_dir }}
+        run: |
+          ./dart-sdk/bin/dart --version
+          cat dart-sdk/version
+          echo 'void main() { print("hello from patched dart"); }' > "$RUNNER_TEMP/hello.dart"
+          ./dart-sdk/bin/dart "$RUNNER_TEMP/hello.dart"
+
+      - name: Package
+        working-directory: dart/sdk/${{ matrix.out_dir }}
+        run: |
+          ZIP="dartsdk-${{ matrix.os_name }}-${{ matrix.arch }}-release.zip"
+          rm -f "$ZIP"
+          zip -q -r -y "$ZIP" dart-sdk
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "$ZIP" > "$ZIP.sha256sum"
+          else
+            sha256sum "$ZIP" > "$ZIP.sha256sum"
+          fi
+          cat "$ZIP.sha256sum"
+          mv "$ZIP" "$ZIP.sha256sum" "$GITHUB_WORKSPACE/"
+          ls -la "$GITHUB_WORKSPACE"/dartsdk-*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dartsdk-${{ matrix.os_name }}-${{ matrix.arch }}-release
+          path: |
+            dartsdk-*.zip
+            dartsdk-*.zip.sha256sum
+          if-no-files-found: error
+          compression-level: 0
+
+  build-windows:
+    name: windows-x64
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      # Use the Visual Studio installed on the runner, not Google's packaged one.
+      DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+      vs2022_install: 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise'
+    steps:
+      - name: Configure git for depot_tools
+        shell: cmd
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.filemode false
+          git config --global core.longpaths true
+
+      - name: Install depot_tools
+        shell: cmd
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git %RUNNER_TEMP%\depot_tools
+          echo %RUNNER_TEMP%\depot_tools>> %GITHUB_PATH%
+
+      - name: Bootstrap depot_tools
+        shell: cmd
+        run: |
+          gclient --version
+          where python3
+
+      - name: Check out ${{ env.SOURCE_BRANCH }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOURCE_BRANCH }}
+          path: dart/sdk
+          persist-credentials: false
+
+      - name: Show what is being built
+        shell: cmd
+        working-directory: dart/sdk
+        run: |
+          git log -3 --format="%%H %%an %%s"
+          findstr /C:"boringssl_rev" DEPS
+          findstr /R "^CHANNEL ^MAJOR ^MINOR ^PATCH " tools\VERSION
+
+      - name: Check Windows SDK version
+        shell: pwsh
+        working-directory: dart/sdk
+        run: |
+          # The Dart build pins the Windows SDK version it passes to vcvarsall.
+          # If that exact SDK is not on the runner, fall back to the newest one
+          # that is installed so the build can still proceed.
+          $files = @('build\toolchain\win\setup_toolchain.py', 'build\vs_toolchain.py')
+          $wanted = (Select-String -Path $files[0] -Pattern "^SDK_VERSION = '([^']+)'").Matches[0].Groups[1].Value
+          $kits = 'C:\Program Files (x86)\Windows Kits\10\Include'
+          $installed = Get-ChildItem $kits -Directory | ForEach-Object { $_.Name } | Where-Object { $_ -match '^10\.' } | Sort-Object { [version]$_ }
+          Write-Host "wanted SDK: $wanted"
+          Write-Host "installed SDKs: $($installed -join ', ')"
+          if ($installed -notcontains $wanted) {
+            $newest = $installed[-1]
+            Write-Host "::warning::Windows SDK $wanted is not installed; building with $newest instead"
+            foreach ($f in $files) {
+              (Get-Content $f) -replace "^SDK_VERSION = '[^']+'", "SDK_VERSION = '$newest'" | Set-Content $f
+            }
+          }
+
+      - name: gclient sync
+        shell: pwsh
+        working-directory: dart
+        run: |
+          @'
+          solutions = [
+            {
+              "name": "sdk",
+              "url": "https://github.com/fa0311/flutter-sdk-eMudhra.git",
+              "deps_file": "DEPS",
+              "managed": False,
+              "custom_deps": {},
+              "custom_vars": {
+                "download_reclient": False,
+              },
+            },
+          ]
+          '@ | Set-Content -Path .gclient -Encoding ascii
+          gclient sync --no-history -D
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build create_sdk (x64)
+        shell: cmd
+        working-directory: dart/sdk
+        run: python3 tools\build.py --no-rbe --mode release --arch x64 create_sdk
+
+      - name: Smoke test
+        shell: cmd
+        working-directory: dart/sdk/out/ReleaseX64
+        run: |
+          dart-sdk\bin\dart.exe --version
+          type dart-sdk\version
+          echo void main() { print("hello from patched dart"); } > %RUNNER_TEMP%\hello.dart
+          dart-sdk\bin\dart.exe %RUNNER_TEMP%\hello.dart
+
+      - name: Package
+        shell: pwsh
+        working-directory: dart/sdk/out/ReleaseX64
+        run: |
+          $zip = 'dartsdk-windows-x64-release.zip'
+          if (Test-Path $zip) { Remove-Item $zip }
+          7z a -tzip -mx=5 -r $zip dart-sdk | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          "$hash  $zip`n" | Set-Content -Path "$zip.sha256sum" -Encoding ascii -NoNewline
+          Get-Content "$zip.sha256sum"
+          Move-Item $zip, "$zip.sha256sum" $env:GITHUB_WORKSPACE
+          Get-ChildItem $env:GITHUB_WORKSPACE\dartsdk-*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dartsdk-windows-x64-release
+          path: |
+            dartsdk-*.zip
+            dartsdk-*.zip.sha256sum
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish release ${{ inputs.version }}-emudhra
+    needs: [build-unix, build-windows]
+    # Publish whatever platforms succeeded, even if another platform failed.
+    if: ${{ !cancelled() && inputs.publish_release }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Check out main (release notes data)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: emudhra
+          sparse-checkout-cone-mode: true
+
+      - name: Download SDK artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: dartsdk-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_UNIX: ${{ needs.build-unix.result }}
+          RESULT_WINDOWS: ${{ needs.build-windows.result }}
+        run: |
+          set -euo pipefail
+          ls -la dist
+          if ! ls dist/dartsdk-*.zip >/dev/null 2>&1; then
+            echo "::error::No SDK zip was built; not publishing a release."
+            exit 1
+          fi
+
+          TARGET_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${SOURCE_BRANCH}" --jq .object.sha)"
+          FLUTTER_VERSIONS="$(awk -v v="${DART_VERSION}" '$1 == v { $1 = ""; sub(/^ /, ""); print }' emudhra/flutter_versions.txt)"
+          [ -n "${FLUTTER_VERSIONS}" ] || FLUTTER_VERSIONS="(no Flutter stable release bundles this exact Dart version)"
+          BORINGSSL_REV="$(gh api "repos/${GITHUB_REPOSITORY}/contents/DEPS?ref=${SOURCE_BRANCH}" --jq .content | base64 -d | grep -oE '"boringssl_rev": "[0-9a-f]+"' | grep -oE '[0-9a-f]{40}')"
+
+          {
+            echo "# Dart SDK ${DART_VERSION} — unofficial eMudhra patch build"
+            echo
+            echo "> **Unofficial build.** Not produced or endorsed by Google or the Dart team."
+            echo "> Source: branch [\`${SOURCE_BRANCH}\`](https://github.com/${GITHUB_REPOSITORY}/tree/${SOURCE_BRANCH}) at \`${TARGET_SHA}\`"
+            echo "> = upstream tag [\`${DART_VERSION}\`](https://github.com/dart-lang/sdk/releases/tag/${DART_VERSION}) + the two fixes below."
+            echo "> Diff against upstream: https://github.com/${GITHUB_REPOSITORY}/compare/${DART_VERSION}...${SOURCE_BRANCH}"
+            echo
+            echo "## What is patched"
+            echo
+            echo "The two security fixes that shipped in Dart 3.13.7 in response to the"
+            echo "compromised eMudhra (emSign) intermediate CA keys ([dart-lang/sdk#64644](https://github.com/dart-lang/sdk/issues/64644)):"
+            echo
+            echo "1. **\`[dart:io]\` Use Conscrypt APEX root store on Android 14+** — upstream"
+            echo "   [dart-lang/sdk#64696](https://github.com/dart-lang/sdk/pull/64696),"
+            echo "   commit [3ee784c4005](https://github.com/dart-lang/sdk/commit/3ee784c400517b44f4865531d1054c3df4363c9a),"
+            echo "   stable cherry-pick [568260](https://dart-review.googlesource.com/c/sdk/+/568260)."
+            echo "2. **Roll BoringSSL to \`${BORINGSSL_REV}\`** (same revision as Dart 3.13.7 / main), which includes"
+            echo "   BoringSSL [dd682072baab \"Block a handful of intermediate certificates\"](https://boringssl.googlesource.com/boringssl/+/dd682072baab8029a83347e639d056c03e48d7e0):"
+            echo "   the eight compromised intermediate keys are rejected by SPKI hash during X.509 verification."
+            echo "   Mirrors the stable cherry-pick [568261](https://dart-review.googlesource.com/c/sdk/+/568261)."
+            echo
+            echo "## Flutter"
+            echo
+            echo "Flutter stable releases that bundle Dart ${DART_VERSION}: ${FLUTTER_VERSIONS}"
+            echo
+            echo "Replacing \`flutter/bin/cache/dart-sdk\` with one of these zips fixes the \`dart\` / \`flutter\` command line tools"
+            echo "and standalone Dart programs. It does **not** change Flutter *apps*: on Android, iOS and desktop the"
+            echo "\`dart:io\` TLS code is compiled into the Flutter engine, which has to be rebuilt separately."
+            echo
+            echo "## Files"
+            echo
+            echo '```'
+            cat dist/*.sha256sum
+            echo '```'
+            echo
+            echo "Build results — unix (linux/macos): ${RESULT_UNIX}, windows: ${RESULT_WINDOWS}."
+            echo "Built by GitHub Actions run [${GITHUB_RUN_ID}](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+          } > notes.md
+          cat notes.md
+
+          TITLE="Dart SDK ${DART_VERSION} (eMudhra patched)"
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --notes-file notes.md
+          else
+            gh release create "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --target "${TARGET_SHA}" \
+              --title "${TITLE}" --notes-file notes.md --latest=false
+          fi
+          gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --clobber dist/dartsdk-*
+          gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json url,assets --jq '.url, (.assets[] | "  " + .name + " (" + (.size|tostring) + " bytes)")'
