@@ -1,0 +1,82 @@
+# Example mise configuration for the eMudhra patch builds.
+# Copy the parts you need into your project's mise.toml (or into
+# ~/.config/mise/config.toml with `mise use -g ...`).
+
+# ---------------------------------------------------------------------------
+# 1. Patched Dart SDK
+#
+# mise's registry `dart` is itself an `http:` tool, so giving `http:dart` our
+# URL replaces it with the zips published at
+# https://github.com/fa0311/flutter-sdk-eMudhra/releases. Versions are the
+# upstream version numbers (3.10.9, 3.11.6, 3.12.2, 3.13.7):
+#   mise ls-remote http:dart     # lists them
+#   mise use http:dart@latest    # newest one
+# ---------------------------------------------------------------------------
+[tools."http:dart"]
+version = "3.13.7"
+url = "https://github.com/fa0311/flutter-sdk-eMudhra/releases/download/{{ version }}-emudhra/dartsdk-{{ os() }}-{{ arch() }}-release.zip"
+bin_path = "dart-sdk/bin"
+version_list_url = "https://api.github.com/repos/fa0311/flutter-sdk-eMudhra/releases?per_page=100"
+version_json_path = ".[].tag_name"
+version_expr = 'map(filter(versions, { !hasPrefix(#, "flutter-") }), { trimSuffix(#, "-emudhra") }) | sortVersions()'
+
+# ---------------------------------------------------------------------------
+# 2. Flutter with the patched engine
+#
+# The Flutter SDK itself stays official (mise's registry `flutter`). The engine
+# artifacts, bin/cache/dart-sdk and the Android Maven artifacts come from the
+# patched mirror published as release flutter-<version>-emudhra, served on
+# localhost by the `emudhra-mirror` task and reached through
+# FLUTTER_STORAGE_BASE_URL. Only Flutter versions that have an engine release
+# work (see emudhra/flutter_engines.txt): 3.47.7, 3.44.9, 3.41.9, 3.38.10.
+#
+#   mise install
+#   mise run emudhra-mirror      # terminal 1: download once, then serve (keep running)
+#   flutter precache --android   # terminal 2 (mise env applies in this directory)
+#   flutter build apk --release
+# ---------------------------------------------------------------------------
+[tools]
+flutter = "3.47.7"
+
+[env]
+FLUTTER_STORAGE_BASE_URL = "http://127.0.0.1:8181"
+
+[tasks.emudhra-mirror]
+description = "Download the patched Flutter engine mirror for the pinned Flutter version, reset Flutter's cached engine artifacts, and serve the mirror on 127.0.0.1:8181 (keep it running while using flutter)"
+run = '''
+set -euo pipefail
+VERSION="${EMUDHRA_FLUTTER_VERSION:-$(mise current flutter 2>/dev/null | head -1)}"
+[ -n "${VERSION}" ] || { echo "cannot determine the Flutter version; set EMUDHRA_FLUTTER_VERSION" >&2; exit 1; }
+PORT="${EMUDHRA_MIRROR_PORT:-8181}"
+RELEASE="https://github.com/fa0311/flutter-sdk-eMudhra/releases/download/flutter-${VERSION}-emudhra"
+RAW="https://raw.githubusercontent.com/fa0311/flutter-sdk-eMudhra/main/emudhra"
+DIR="${XDG_CACHE_HOME:-$HOME/.cache}/emudhra-flutter-mirror/${VERSION}"
+mkdir -p "${DIR}"
+
+if [ ! -f "${DIR}/.complete" ]; then
+  echo "downloading the Flutter ${VERSION} engine mirror from ${RELEASE} ..."
+  curl -fsSL "${RELEASE}/flutter-engine-${VERSION}-emudhra.sha256sum" -o "${DIR}/sha256sum.txt"
+  PARTS="$(grep -oE "flutter-engine-${VERSION}-emudhra-mirror\.tar(\.[0-9]+\.part)?" "${DIR}/sha256sum.txt" | sort -u)"
+  for p in ${PARTS}; do
+    [ -f "${DIR}/${p}" ] || curl -fL --progress-bar "${RELEASE}/${p}" -o "${DIR}/${p}"
+  done
+  (cd "${DIR}" && grep -E 'mirror\.tar' sha256sum.txt | sha256sum -c -)
+  rm -rf "${DIR}/mirror" && mkdir -p "${DIR}/mirror"
+  # shellcheck disable=SC2086
+  (cd "${DIR}" && cat ${PARTS} | tar -xf - -C mirror)
+  # shellcheck disable=SC2086
+  (cd "${DIR}" && rm -f ${PARTS})
+  touch "${DIR}/.complete"
+fi
+[ -f "${DIR}/flutter_mirror.py" ] || curl -fsSL "${RAW}/flutter_mirror.py" -o "${DIR}/flutter_mirror.py"
+
+# Make the flutter tool and Gradle fetch the engine artifacts again, from the mirror.
+FLUTTER_BIN="$(command -v flutter)"
+FLUTTER_ROOT="$(cd "$(dirname "$(readlink -f "${FLUTTER_BIN}")")/.." && pwd)"
+echo "resetting cached engine artifacts in ${FLUTTER_ROOT}/bin/cache"
+rm -rf "${FLUTTER_ROOT}/bin/cache/artifacts/engine" "${FLUTTER_ROOT}/bin/cache/dart-sdk" "${FLUTTER_ROOT}"/bin/cache/*.stamp
+rm -rf "${HOME}"/.gradle/caches/modules-2/files-2.1/io.flutter "${HOME}"/.gradle/caches/modules-2/metadata-*/descriptors/io.flutter
+
+echo "serving ${DIR}/mirror on http://127.0.0.1:${PORT} (FLUTTER_STORAGE_BASE_URL); press Ctrl-C to stop"
+exec python3 "${DIR}/flutter_mirror.py" --dir "${DIR}/mirror" --port "${PORT}"
+'''

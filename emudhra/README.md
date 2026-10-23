@@ -329,6 +329,67 @@ minutes on a 16-core machine, so expect roughly 1.5–3 hours per config on the
 4-core hosted runners. Re-running the workflow with a subset of configs
 adds those artifacts to the existing release.
 
+## Installing with mise
+
+`emudhra/mise.example.toml` is a complete example; the pieces are:
+
+**Dart SDK.** mise's registry `dart` is an `http:` tool, so pointing `http:dart`
+at the release zips replaces it. Versions are the upstream numbers
+(`3.10.9`, `3.11.6`, `3.12.2`, `3.13.7`); `mise ls-remote http:dart` lists them
+and `latest` resolves to the newest.
+
+```toml
+[tools."http:dart"]
+version = "3.13.7"
+url = "https://github.com/fa0311/flutter-sdk-eMudhra/releases/download/{{ version }}-emudhra/dartsdk-{{ os() }}-{{ arch() }}-release.zip"
+bin_path = "dart-sdk/bin"
+version_list_url = "https://api.github.com/repos/fa0311/flutter-sdk-eMudhra/releases?per_page=100"
+version_json_path = ".[].tag_name"
+version_expr = 'map(filter(versions, { !hasPrefix(#, "flutter-") }), { trimSuffix(#, "-emudhra") }) | sortVersions()'
+```
+
+```sh
+mise install
+mise exec -- dart --version                       # same string as the official release
+python3 emudhra/check_blocklist.py "$(mise which dart)"   # 8/8 = patched
+```
+
+The one-line form works too (quote it, the braces are mise templates):
+`mise use 'http:dart[url=https://github.com/fa0311/flutter-sdk-eMudhra/releases/download/{{ version }}-emudhra/dartsdk-{{ os() }}-{{ arch() }}-release.zip,bin_path=dart-sdk/bin]@3.13.7'`.
+Add `checksum = "sha256:..."` (per platform under `platforms.<os>-<arch>`) from
+the release's `.sha256sum` files, or enable `mise.lock`, to pin the download.
+
+**Flutter.** Keep the official SDK from mise's registry and take the engine
+from the mirror: `[env]` sets `FLUTTER_STORAGE_BASE_URL`, and the
+`emudhra-mirror` task downloads the `flutter-<version>-emudhra` mirror tar once
+(into `~/.cache/emudhra-flutter-mirror/<version>`), resets the engine
+artifacts Flutter already cached (including the Gradle `io.flutter` cache),
+and serves the mirror with `flutter_mirror.py`. Only Flutter versions with an
+engine release work: 3.47.7, 3.44.9, 3.41.9, 3.38.10.
+
+```toml
+[tools]
+flutter = "3.47.7"
+
+[env]
+FLUTTER_STORAGE_BASE_URL = "http://127.0.0.1:8181"
+
+[tasks.emudhra-mirror]
+run = "..."   # see emudhra/mise.example.toml
+```
+
+```sh
+mise install
+mise run emudhra-mirror        # terminal 1: keep it running while you use flutter
+flutter precache --android     # terminal 2, in the project directory
+flutter build apk --release
+python3 emudhra/check_blocklist.py build/app/outputs/flutter-apk/app-release.apk
+```
+
+Everything the mirror does not contain (fonts, the gradle wrapper, iOS/macOS
+artifacts, ...) is fetched from the official storage by the proxy, so the
+mirror only has to be running; nothing else about the Flutter SDK changes.
+
 ## Scripts in this directory
 
 | File | Purpose |
@@ -343,3 +404,4 @@ adds those artifacts to the existing release.
 | `make_mirror.py` | arranges engine `zip_archives` into the `flutter_infra_release` / `download.flutter.io` layout |
 | `flutter_mirror.py` | local `FLUTTER_STORAGE_BASE_URL` server with fallback to the official storage |
 | `check_blocklist.py` | verifies that a binary / zip contains BoringSSL's blocklist of the eight compromised keys |
+| `mise.example.toml` | mise configuration for the patched Dart SDK and for Flutter with the patched engine mirror |
