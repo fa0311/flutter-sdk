@@ -50,9 +50,21 @@ the tag):
 | 2 | Roll BoringSSL (`DEPS` `boringssl_rev`) to `c7eb007fd10627f1abb41a3e368b85e24cd20af9`, the revision used by Dart 3.13.7 and main. It contains BoringSSL [dd682072baab "Block a handful of intermediate certificates"](https://boringssl.googlesource.com/boringssl/+/dd682072baab8029a83347e639d056c03e48d7e0), which rejects the eight compromised keys by SPKI SHA-256 hash during X.509 verification (`X509_V_ERR_CERT_REVOKED`), plus the X.509 path-builder fixes that landed with it. `third_party/boringssl/BUILD.gn` is identical on every patched tag and on main, so the roll is DEPS-only, exactly like upstream's stable cherry-pick. | stable cherry-pick [568261](https://dart-review.googlesource.com/c/sdk/+/568261) |
 
 The BoringSSL roll commit also prepends a short section to `CHANGELOG.md`.
-Nothing else is changed: `tools/VERSION` is untouched, so `dart --version`
-reports the same version number as the official release (the git hash and
-date identify the patched build).
+Nothing else is changed: `tools/VERSION` is untouched.
+
+**SDK hash.** The Dart VM, the kernel compiler and every snapshot embed an
+"SDK hash" derived from `git rev-parse --short=10 HEAD`, and a VM refuses
+kernels/snapshots produced by a build with a different hash
+(`Invalid SDK hash`, `Wrong full snapshot version`). Flutter's engine build
+compiles some kernels with the official prebuilt Dart SDK, and users mix
+`bin/cache/dart-sdk`, `frontend_server` and engine binaries, so a patched
+build with its own hash would not interoperate. Both workflows therefore
+check out the patched branch and then `git reset --soft` HEAD to the
+**upstream commit** (the tag, or the engine's `dart_revision`), keeping the
+two fixes as working-tree changes. As a result `dart --version`,
+`dart-sdk/revision` and the embedded SDK hash are *identical to the official
+release*; the only way to tell a patched binary apart is its content, e.g.
+with `emudhra/check_blocklist.py` (8/8 = patched, 0/8 = official).
 
 ## Versions, branches and releases
 
@@ -84,11 +96,11 @@ top-level `dart-sdk/` directory, the same layout as the official downloads.
   `dart-sdk/` directory of the build for your Flutter release's Dart minor
   line (see the table; e.g. Flutter 3.38.x → 3.10.9). This
   fixes the `dart` and `flutter` command line tools, `pub`, the analyzer, etc.
-- **Flutter apps**: not fixed by this. On Android, iOS, macOS, Windows and
-  Linux the `dart:io` networking code runs inside the Flutter engine
-  (`libflutter.so`, `Flutter.framework`, `flutter_windows.dll`, …), which has to
-  be rebuilt against a patched Dart, or you wait for a Flutter stable release
-  that bundles Dart ≥ 3.13.7.
+- **Flutter apps**: not fixed by the Dart SDK zips. On Android, Linux and
+  Windows the `dart:io` networking code runs inside the Flutter engine
+  (`libflutter.so`, the GTK/Windows embedders), which has to be rebuilt against
+  a patched Dart — see [Flutter apps: patched engine builds](#flutter-apps-patched-engine-builds)
+  below — or you wait for a Flutter stable release that bundles Dart ≥ 3.13.7.
 
 Platform notes:
 
@@ -139,6 +151,18 @@ void main() async {
 (This is the program from the gist that Flutter turned into its own
 [handshake check devicelab test](https://github.com/flutter/flutter/pull/195113).)
 
+Binaries: `emudhra/check_blocklist.py` scans a file (or the binaries inside a
+zip/jar, e.g. `libflutter.so` in an engine artifact) for the eight SPKI hashes
+that BoringSSL's blocklist embeds. `8/8 ... OK` means the binary was built
+with the fix; an official build reports `0/8 ... MISSING`. Because the
+patched builds deliberately carry the official version string and SDK hash
+(see above), this is the way to verify what you have:
+
+```sh
+python3 emudhra/check_blocklist.py dart-sdk/bin/dart
+python3 emudhra/check_blocklist.py android-arm64-release/artifacts.zip
+```
+
 ## Building
 
 ### GitHub Actions
@@ -188,6 +212,123 @@ cd sdk && ./tools/build.py --no-rbe --mode release --arch x64 create_sdk
 out/ReleaseX64/dart-sdk/bin/dart --version
 ```
 
+## Flutter apps: patched engine builds
+
+Flutter *apps* do not use `bin/cache/dart-sdk` at run time: `dart:io` is
+compiled into the Flutter engine (`libflutter.so` on Android, the GTK/Windows
+embedders on desktop). The workflow `.github/workflows/build-flutter-engine.yml`
+therefore rebuilds the engine of a Flutter stable release with the same two
+fixes and publishes the artifacts as release `flutter-<version>-emudhra`.
+
+Only platforms whose `dart:io` verifies TLS with BoringSSL are affected and
+built: **Android** and **Linux** (Windows can be added the same way; iOS and
+macOS delegate verification to Apple's Security framework and need nothing).
+
+### How it works
+
+- `emudhra/flutter_engines.txt` maps each Flutter stable version to its engine
+  commit (`bin/internal/engine.version`) and to the Dart version that commit
+  pins in `DEPS` (`dart_revision`):
+
+  | Flutter | engine commit | pinned Dart | Dart branch used |
+  |---------|---------------|-------------|------------------|
+  | 3.47.7 | `deb287481e3c` | 3.13.5 | `stable-3.13.5-emudhra` |
+  | 3.44.9 | `5a2a6a42cce6` | 3.12.2 | `stable-3.12.2-emudhra` |
+  | 3.41.9 | `42d3d75a56ef` | 3.11.5 | `stable-3.11.5-emudhra` |
+  | 3.38.10 | `cafcda5721a7` | 3.10.9 | `stable-3.10.9-emudhra` |
+
+- The engine source is the **unmodified** engine commit. Only the `.gclient`
+  file carries two overrides: `custom_deps` replaces
+  `engine/src/flutter/third_party/dart` with the patched Dart branch (the exact
+  Dart revision the engine pins, plus the two fixes), and `custom_vars` sets
+  `dart_boringssl_rev` to `c7eb007fd106`. The engine's
+  `third_party/boringssl/BUILD.gn` is identical to Dart's, so, as on the Dart
+  side, the roll is DEPS-only.
+- Each engine configuration is built exactly as Flutter's CI does: the gn
+  flags, ninja targets and the list of archives to upload are read from
+  `engine/src/flutter/ci/builders/*.json` of the checkout
+  (`emudhra/engine_build_config.py`). One deliberate difference: Flutter CI
+  ships the official *prebuilt* Dart SDK as `dart-sdk-<platform>.zip`
+  (`--prebuilt-dart-sdk`), which would be unpatched, so configs that archive
+  it (`host_debug`, `linux_debug_arm64`) are built with
+  `--no-prebuilt-dart-sdk` and package the SDK built from the patched source. Default configs (`configs: all`):
+  `android_{release,profile}_{arm64,x64}`, `android_{release,profile}` (arm),
+  `android_debug{,_arm64,_x64,_x86}`, `host_debug`, `host_release`,
+  `host_{debug,profile,release}_desktop`, `linux_{debug,profile,release}_arm64`.
+- Because the engine commit is unchanged, the artifacts carry the official
+  engine hash and the Maven artifacts (`download.flutter.io/io/flutter/...`)
+  use the official coordinates `1.0.0-<engine hash>`. An unmodified Flutter SDK
+  will therefore accept them when they are served through
+  `FLUTTER_STORAGE_BASE_URL`.
+- The `release` job restores the mirror tar already published for the
+  version (if any), overlays the new artifacts, drops what the flutter tool
+  never downloads (`impeller_sdk.zip`, `*-embedder.zip`, and the content-hash
+  duplicates of the Maven artifacts — the Gradle plugin resolves
+  `1.0.0-<engine commit>`), and arranges everything into the storage layout
+  (`emudhra/make_mirror.py`) and publishes one tar
+  (`flutter-engine-<version>-emudhra-mirror.tar`, split into `.part` files if
+  it exceeds 1.9 GB), the per-config `symbols-<config>.zip` files, a listing
+  and a `.sha256sum`.
+
+### Using a patched engine
+
+```sh
+# 1. unpack the mirror tar from the release
+mkdir mirror && tar -xf flutter-engine-3.47.7-emudhra-mirror.tar -C mirror
+
+# 2. serve it; anything that is not in the mirror (fonts, gradle wrapper, ...)
+#    is fetched from storage.googleapis.com on demand and cached
+python3 emudhra/flutter_mirror.py --dir mirror --port 8181 &
+export FLUTTER_STORAGE_BASE_URL=http://127.0.0.1:8181
+
+# 3. drop the official engine artifacts the tool and Gradle already cached
+rm -rf "$FLUTTER_ROOT/bin/cache/artifacts/engine" "$FLUTTER_ROOT/bin/cache"/*.stamp
+rm -rf ~/.gradle/caches/modules-2/files-2.1/io.flutter \
+       ~/.gradle/caches/modules-2/metadata-*/descriptors/io.flutter
+
+# 4. re-download from the mirror and build
+flutter precache --android --linux
+flutter build apk --release        # keep FLUTTER_STORAGE_BASE_URL exported
+```
+
+Step 3 matters: the Flutter Gradle plugin resolves `io.flutter:arm64_v8a_release:1.0.0-<hash>`
+from `$FLUTTER_STORAGE_BASE_URL/download.flutter.io`, and Gradle will happily
+reuse an official jar it cached earlier under the same coordinates.
+
+If you have your own static hosting, upload the `mirror/` directory there and
+point `FLUTTER_STORAGE_BASE_URL` at it; the host must then also serve (or
+proxy) the artifacts that were not rebuilt.
+
+### Verified end to end
+
+With an unmodified Flutter 3.47.7 SDK, `FLUTTER_STORAGE_BASE_URL` pointing at
+`flutter_mirror.py` serving the `flutter-3.47.7-emudhra` mirror tar, and the
+caches purged as above: `flutter --version` installed the patched
+`bin/cache/dart-sdk` (8/8), `flutter precache --android` took every engine
+artifact from the mirror (only `engine_stamp.json`, fonts and the gradle
+wrapper came from the official storage), Gradle resolved
+`io.flutter:arm64_v8a_release:1.0.0-<engine commit>` from the mirror, and the
+resulting `flutter build apk --release` APK contains a `libflutter.so` with all
+eight blocklist hashes.
+
+### Running the engine workflow
+
+```sh
+export GITHUB_TOKEN=...
+# all default configs for Flutter 3.47.7
+curl -sS -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+  https://api.github.com/repos/fa0311/flutter-sdk-eMudhra/actions/workflows/build-flutter-engine.yml/dispatches \
+  -d '{"ref":"main","inputs":{"flutter_version":"3.47.7","configs":"all","publish_release":"true"}}'
+# or a subset
+#   "configs":"android_release_arm64,host_debug"
+```
+
+Each config is one job on a free `ubuntu-24.04` runner: `gclient sync` of the
+engine is about 15 GB and a few minutes; `android_release_arm64` took 28
+minutes on a 16-core machine, so expect roughly 1.5–3 hours per config on the
+4-core hosted runners. Re-running the workflow with a subset of configs
+adds those artifacts to the existing release.
+
 ## Scripts in this directory
 
 | File | Purpose |
@@ -197,3 +338,8 @@ out/ReleaseX64/dart-sdk/bin/dart --version
 | `dispatch.sh` | triggers the GitHub Actions workflow for each version |
 | `status.sh` | shows the latest run and job results for each version |
 | `flutter_versions.txt` | Dart version → Flutter stable releases, used in the release notes |
+| `flutter_engines.txt` | Flutter stable version → engine commit → pinned Dart version (engine workflow) |
+| `engine_build_config.py` | reads gn flags / ninja targets of an engine config from `ci/builders/*.json` |
+| `make_mirror.py` | arranges engine `zip_archives` into the `flutter_infra_release` / `download.flutter.io` layout |
+| `flutter_mirror.py` | local `FLUTTER_STORAGE_BASE_URL` server with fallback to the official storage |
+| `check_blocklist.py` | verifies that a binary / zip contains BoringSSL's blocklist of the eight compromised keys |

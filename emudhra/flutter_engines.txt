@@ -1,0 +1,12 @@
+# Flutter stable version -> engine commit (bin/internal/engine.version at that
+# tag) -> Dart stable version pinned by that engine commit's DEPS
+# ('dart_revision'). The engine is rebuilt from the unmodified engine commit
+# with the Dart checkout replaced by branch stable-<dart>-emudhra and
+# dart_boringssl_rev overridden, so the artifacts carry the official engine
+# hash and can be served through FLUTTER_STORAGE_BASE_URL.
+#
+# flutter   engine_commit                              dart
+3.47.7      deb287481e3ce9468f3434937ced4240a70539ca   3.13.5
+3.44.9      5a2a6a42cce67f965cf540fcecf616faca624aa1   3.12.2
+3.41.9      42d3d75a56efe1a2e9902f52dc8006099c45d937   3.11.5
+3.38.10     cafcda5721a78a7884db92f13c5e89f7643d52dd   3.10.9

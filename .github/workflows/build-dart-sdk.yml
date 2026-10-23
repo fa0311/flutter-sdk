@@ -90,10 +90,20 @@ jobs:
           path: dart/sdk
           persist-credentials: false
 
-      - name: Show what is being built
+      - name: Pin HEAD to the upstream tag (keep the patches in the tree)
         working-directory: dart/sdk
         run: |
+          set -euo pipefail
           git log -3 --format='%H %an %s'
+          # The SDK hash baked into kernels, snapshots and `dart --version` is
+          # `git rev-parse --short=10 HEAD`. Keep it identical to the official
+          # release so this SDK interoperates with official Dart/Flutter
+          # artifacts of the same version; the two fixes stay in the tree.
+          # The fork does not carry upstream's tags; take the tag from dart-lang/sdk.
+          git fetch --depth=1 https://github.com/dart-lang/sdk.git "refs/tags/${DART_VERSION}:refs/tags/${DART_VERSION}"
+          git reset --soft "refs/tags/${DART_VERSION}"
+          echo "HEAD is now $(git rev-parse HEAD) (upstream tag ${DART_VERSION})"
+          git diff --cached --stat
           grep -E '"boringssl_rev"' DEPS
           grep -E '^(CHANNEL|MAJOR|MINOR|PATCH) ' tools/VERSION
 
@@ -189,11 +199,15 @@ jobs:
           path: dart/sdk
           persist-credentials: false
 
-      - name: Show what is being built
+      - name: Pin HEAD to the upstream tag (keep the patches in the tree)
         shell: cmd
         working-directory: dart/sdk
         run: |
           git log -3 --format="%%H %%an %%s"
+          git fetch --depth=1 https://github.com/dart-lang/sdk.git refs/tags/%DART_VERSION%:refs/tags/%DART_VERSION% || exit /b 1
+          git reset --soft refs/tags/%DART_VERSION% || exit /b 1
+          git log -1 --format="HEAD is now %%H"
+          git diff --cached --stat
           findstr /C:"boringssl_rev" DEPS
           findstr /R "^CHANNEL ^MAJOR ^MINOR ^PATCH " tools\VERSION
 
@@ -342,6 +356,10 @@ jobs:
             echo "   the eight compromised intermediate keys are rejected by SPKI hash during X.509 verification."
             echo "   Mirrors the stable cherry-pick [568261](https://dart-review.googlesource.com/c/sdk/+/568261)."
             echo
+            echo "The build has HEAD at the upstream tag with the two fixes applied in the working tree, so \`dart --version\`,"
+            echo "\`dart-sdk/revision\` and the SDK hash inside kernels/snapshots are identical to the official release and the SDK"
+            echo "interoperates with official Flutter artifacts. Verify a binary with \`emudhra/check_blocklist.py\` (8/8 = patched)."
+            echo
             echo "## Flutter"
             echo
             echo "This is the newest ${DART_MINOR}.x patch release, so it is the build to use for every Flutter stable"
@@ -350,7 +368,8 @@ jobs:
             echo
             echo "Replacing \`flutter/bin/cache/dart-sdk\` with one of these zips fixes the \`dart\` / \`flutter\` command line tools"
             echo "and standalone Dart programs. It does **not** change Flutter *apps*: on Android, iOS and desktop the"
-            echo "\`dart:io\` TLS code is compiled into the Flutter engine, which has to be rebuilt separately."
+            echo "\`dart:io\` TLS code is compiled into the Flutter engine. Rebuilt engines are published separately as"
+            echo "\`flutter-<version>-emudhra\` releases (see emudhra/README.md)."
             echo
             echo "## Files"
             echo

@@ -1,0 +1,419 @@
+# Rebuilds the Flutter engine of one Flutter stable release with the eMudhra
+# fixes, for the platforms whose dart:io verifies TLS with BoringSSL (Android
+# and Linux; iOS/macOS use Apple's Security framework and are unaffected).
+#
+# The engine source is the *unmodified* engine commit of the Flutter release
+# (bin/internal/engine.version). Only two gclient overrides are applied:
+#   - engine/src/flutter/third_party/dart  -> branch stable-<dart>-emudhra of
+#     this repository (the Dart revision the engine pins + the two fixes)
+#   - dart_boringssl_rev                   -> c7eb007fd106 (Dart 3.13.7/main),
+#     which contains BoringSSL's blocklist of the compromised intermediates
+# so the artifacts carry the official engine hash and can be served to an
+# unmodified Flutter SDK through FLUTTER_STORAGE_BASE_URL (see
+# emudhra/flutter_mirror.py).
+#
+# Each engine configuration (android_release_arm64, host_debug, ...) is built
+# exactly as engine/src/flutter/ci/builders/*.json describes it (gn flags and
+# ninja targets are read from the checkout, so this works across releases).
+name: Build Flutter engine (eMudhra patched)
+
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_version:
+        description: 'Flutter stable version, e.g. 3.47.7 (must be listed in emudhra/flutter_engines.txt)'
+        required: true
+        type: string
+      configs:
+        description: 'Comma-separated engine configs to build, or "all" (Android + Linux host/desktop set)'
+        required: false
+        type: string
+        default: all
+      publish_release:
+        description: 'Create or update the GitHub release flutter-<version>-emudhra'
+        required: false
+        type: boolean
+        default: true
+
+run-name: Flutter engine ${{ inputs.flutter_version }} (eMudhra patched) [${{ inputs.configs }}]
+
+concurrency:
+  group: flutter-engine-${{ inputs.flutter_version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: ${{ inputs.flutter_version }}
+  RELEASE_TAG: flutter-${{ inputs.flutter_version }}-emudhra
+  BORINGSSL_REV: c7eb007fd10627f1abb41a3e368b85e24cd20af9
+  DEPOT_TOOLS_UPDATE: '0'
+  GCLIENT_SUPPRESS_GIT_VERSION_WARNING: '1'
+
+jobs:
+  prepare:
+    name: Resolve engine commit and patched Dart
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      engine_commit: ${{ steps.resolve.outputs.engine_commit }}
+      dart_version: ${{ steps.resolve.outputs.dart_version }}
+      dart_sha: ${{ steps.resolve.outputs.dart_sha }}
+      dart_revision: ${{ steps.resolve.outputs.dart_revision }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Check out emudhra/ from main
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: emudhra
+          sparse-checkout-cone-mode: true
+
+      - name: Resolve
+        id: resolve
+        env:
+          CONFIGS: ${{ inputs.configs }}
+        run: |
+          set -euo pipefail
+          read -r ENGINE_COMMIT DART_VERSION < <(awk -v v="${FLUTTER_VERSION}" '!/^#/ && $1 == v { print $2, $3 }' emudhra/flutter_engines.txt) || true
+          if [ -z "${ENGINE_COMMIT:-}" ]; then
+            echo "::error::Flutter ${FLUTTER_VERSION} is not listed in emudhra/flutter_engines.txt"
+            exit 1
+          fi
+          DART_SHA="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/heads/stable-${DART_VERSION}-emudhra" | cut -f1)"
+          if [ -z "${DART_SHA}" ]; then
+            echo "::error::branch stable-${DART_VERSION}-emudhra does not exist (run emudhra/make_branches.sh ${DART_VERSION})"
+            exit 1
+          fi
+          DART_REVISION="$(curl -sSfL "https://raw.githubusercontent.com/flutter/flutter/${ENGINE_COMMIT}/DEPS" | grep -oE "'dart_revision': '[0-9a-f]{40}'" | grep -oE '[0-9a-f]{40}')"
+          [ -n "${DART_REVISION}" ] || { echo "::error::could not read dart_revision from the engine DEPS"; exit 1; }
+          ALL="android_release_arm64 android_release android_release_x64 android_profile_arm64 android_profile android_profile_x64 android_debug android_debug_arm64 android_debug_x64 android_debug_x86 host_debug host_release host_debug_desktop host_profile_desktop host_release_desktop linux_debug_arm64 linux_profile_arm64 linux_release_arm64"
+          if [ "${CONFIGS}" = "all" ] || [ -z "${CONFIGS}" ]; then
+            LIST="${ALL}"
+          else
+            LIST="$(echo "${CONFIGS}" | tr ',' ' ')"
+          fi
+          # shellcheck disable=SC2086
+          MATRIX="$(python3 -c 'import json, sys; print(json.dumps({"include": [{"config": c} for c in sys.argv[1:]]}))' ${LIST})"
+          {
+            echo "engine_commit=${ENGINE_COMMIT}"
+            echo "dart_version=${DART_VERSION}"
+            echo "dart_sha=${DART_SHA}"
+            echo "dart_revision=${DART_REVISION}"
+            echo "matrix=${MATRIX}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Flutter ${FLUTTER_VERSION}: engine ${ENGINE_COMMIT}, Dart ${DART_VERSION} (${DART_REVISION}) -> stable-${DART_VERSION}-emudhra @ ${DART_SHA}"
+          echo "configs: ${LIST}"
+
+  build:
+    name: ${{ matrix.config }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      ENGINE_COMMIT: ${{ needs.prepare.outputs.engine_commit }}
+      DART_VERSION: ${{ needs.prepare.outputs.dart_version }}
+      DART_SHA: ${{ needs.prepare.outputs.dart_sha }}
+      CONFIG: ${{ matrix.config }}
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift \
+            /usr/local/share/boost /opt/microsoft /usr/lib/jvm /usr/local/julia* \
+            /usr/local/lib/node_modules /opt/az /usr/share/miniconda || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          sudo apt-get clean
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ninja-build pkg-config curl unzip \
+            libgtk-3-dev libfontconfig1-dev libfreetype-dev libglu1-mesa-dev libxkbcommon-dev
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Check out emudhra/ from main
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: emudhra
+          sparse-checkout-cone-mode: true
+          path: emudhra-tools
+
+      - name: gclient sync (engine ${{ needs.prepare.outputs.engine_commit }} with patched Dart ${{ needs.prepare.outputs.dart_version }})
+        run: |
+          mkdir -p fl && cd fl
+          cat > .gclient <<EOF
+          solutions = [
+            {
+              "custom_deps": {
+                "engine/src/flutter/third_party/dart":
+                  "https://github.com/${GITHUB_REPOSITORY}.git@${DART_SHA}",
+              },
+              "custom_vars": {
+                "dart_boringssl_rev": "${BORINGSSL_REV}",
+                "download_fuchsia_deps": False,
+                "download_fuchsia_sdk": False,
+              },
+              "deps_file": "DEPS",
+              "managed": False,
+              "name": ".",
+              "safesync_url": "",
+              "url": "https://github.com/flutter/flutter.git",
+            },
+          ]
+          EOF
+          cat .gclient
+          gclient sync --no-history --shallow --revision ".@${ENGINE_COMMIT}" -R -D
+          du -sh .
+          df -h .
+
+      - name: Pin the Dart checkout's HEAD to the engine's dart_revision (keep the patches in the tree)
+        working-directory: fl
+        run: |
+          set -euo pipefail
+          DART_REVISION="$(grep -oE "'dart_revision': '[0-9a-f]{40}'" DEPS | grep -oE '[0-9a-f]{40}')"
+          echo "DART_REVISION=${DART_REVISION}" >> "$GITHUB_ENV"
+          cd engine/src/flutter/third_party/dart
+          [ "$(git rev-parse HEAD)" = "${DART_SHA}" ]
+          git fetch --depth=1 origin "${DART_REVISION}"
+          # The SDK hash baked into kernels, snapshots and `dart --version` is
+          # `git rev-parse --short=10 HEAD`. The engine compiles some kernels with
+          # the official prebuilt Dart SDK of dart_revision, and users mix these
+          # artifacts with official ones, so HEAD must be the official revision.
+          # The two fixes stay in the working tree (and index) and get built.
+          git reset --soft "${DART_REVISION}"
+          echo "HEAD is now $(git rev-parse HEAD) (official Dart ${DART_VERSION})"
+          git diff --cached --stat
+
+      - name: Verify the overrides took effect
+        working-directory: fl
+        run: |
+          set -euo pipefail
+          echo "engine: $(git rev-parse HEAD)"
+          [ "$(git rev-parse HEAD)" = "${ENGINE_COMMIT}" ]
+          cd engine/src/flutter/third_party/dart
+          [ "$(git rev-parse HEAD)" = "${DART_REVISION}" ]
+          git diff --cached --name-only | grep -q 'runtime/bin/security_context_linux.cc'
+          grep -q 'com.android.conscrypt' runtime/bin/security_context_linux.cc
+          cd ../boringssl/src
+          echo "boringssl: $(git rev-parse HEAD)"
+          [ "$(git rev-parse HEAD)" = "${BORINGSSL_REV}" ]
+          grep -q 'check_blocklist' crypto/x509/x509_vfy.cc
+          echo "all overrides verified"
+
+      - name: Resolve build configuration from ci/builders
+        run: |
+          python3 emudhra-tools/emudhra/engine_build_config.py fl/engine/src/flutter/ci/builders "${CONFIG}" | tee -a "$GITHUB_ENV"
+
+      - name: gn
+        working-directory: fl/engine/src
+        run: |
+          # Plain python3 instead of the vpython3 shebang, and apt's ninja
+          # instead of depot_tools' wrapper (which needs a bootstrapped
+          # depot_tools), so the build does not depend on depot_tools state.
+          # shellcheck disable=SC2086
+          python3 ./flutter/tools/gn ${GN_ARGS}
+
+      - name: ninja
+        working-directory: fl/engine/src
+        run: |
+          # shellcheck disable=SC2086
+          /usr/bin/ninja -C "out/${OUT_DIR}" ${NINJA_TARGETS}
+          du -sh "out/${OUT_DIR}"
+
+      - name: Collect the archives CI uploads
+        working-directory: fl/engine/src
+        run: |
+          set -euo pipefail
+          SRC="out/${OUT_DIR}/zip_archives"
+          DST="$GITHUB_WORKSPACE/artifacts/zip_archives"
+          test -d "${SRC}"
+          mkdir -p "${DST}"
+          if [ -z "${ARCHIVE_PATHS:-}" ]; then
+            echo "no archive list in ci/builders; collecting everything under zip_archives"
+            cp -r "${SRC}/." "${DST}/"
+          else
+            for p in ${ARCHIVE_PATHS}; do
+              if [ -e "${SRC}/${p}" ]; then
+                mkdir -p "${DST}/$(dirname "${p}")"
+                cp -r "${SRC}/${p}" "${DST}/${p}"
+              else
+                echo "::warning::expected archive ${p} was not produced"
+              fi
+            done
+          fi
+          find "${DST}" -type f -printf '%12s  %P\n' | sort -k2
+
+      - name: Check that the binaries carry the BoringSSL blocklist
+        run: |
+          # Informational: gen_snapshot and pure-Dart archives do not link the
+          # X.509 verifier, so a MISSING there is expected; libflutter.so,
+          # flutter_tester and the dart-sdk binaries must report 8/8.
+          find artifacts/zip_archives -name '*.zip' -o -name '*.jar' | sort | \
+            xargs -r python3 emudhra-tools/emudhra/check_blocklist.py || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: engine-${{ matrix.config }}
+          path: artifacts/zip_archives
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish release flutter-${{ inputs.flutter_version }}-emudhra
+    needs: [prepare, build]
+    # Publish whatever configs succeeded, even if another config failed.
+    if: ${{ !cancelled() && inputs.publish_release }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      ENGINE_COMMIT: ${{ needs.prepare.outputs.engine_commit }}
+      DART_VERSION: ${{ needs.prepare.outputs.dart_version }}
+      DART_SHA: ${{ needs.prepare.outputs.dart_sha }}
+      DART_REVISION: ${{ needs.prepare.outputs.dart_revision }}
+      BUILD_RESULT: ${{ needs.build.result }}
+    steps:
+      - name: Check out emudhra/ from main
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: emudhra
+          sparse-checkout-cone-mode: true
+
+      - name: Download engine artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: engine-*
+          path: dl
+          merge-multiple: false
+
+      - name: Start from the mirror already published (if any)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p prev mirror
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release download "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --dir prev \
+              --pattern "flutter-engine-${FLUTTER_VERSION}-emudhra-mirror.tar*" || true
+            if ls prev/*.part >/dev/null 2>&1; then
+              cat prev/*.part > "prev/flutter-engine-${FLUTTER_VERSION}-emudhra-mirror.tar"
+            fi
+            if [ -f "prev/flutter-engine-${FLUTTER_VERSION}-emudhra-mirror.tar" ]; then
+              tar -xf "prev/flutter-engine-${FLUTTER_VERSION}-emudhra-mirror.tar" -C mirror
+              echo "previous mirror restored: $(find mirror -type f | wc -l) files"
+            fi
+          else
+            echo "no previous release"
+          fi
+          rm -rf prev
+
+      - name: Assemble the mirror tree
+        run: |
+          set -euo pipefail
+          ls dl
+          python3 emudhra/make_mirror.py --engine-commit "${ENGINE_COMMIT}" --out mirror --skip-symbols dl/engine-* | tee mirror-listing.txt
+          echo "mirror now holds $(find mirror -type f | wc -l) files"
+          mkdir -p out
+          # Debug symbols are kept as separate assets, one per config.
+          for d in dl/engine-*; do
+            c="${d#dl/engine-}"
+            s="$(find "$d" -name symbols.zip | head -1 || true)"
+            [ -n "${s}" ] && cp "${s}" "out/symbols-${c}.zip"
+          done
+          TAR="flutter-engine-${FLUTTER_VERSION}-emudhra-mirror.tar"
+          tar -cf "out/${TAR}" -C mirror .
+          ls -la out
+          # GitHub release assets are limited to 2 GB; split if needed.
+          if [ "$(stat -c %s "out/${TAR}")" -gt 1900000000 ]; then
+            (cd out && split -b 1900m -d --additional-suffix=.part "${TAR}" "${TAR}." && rm "${TAR}")
+            echo "split into parts: cat ${TAR}.*.part > ${TAR}"
+          fi
+          (cd out && sha256sum ./* > "flutter-engine-${FLUTTER_VERSION}-emudhra.sha256sum")
+          cp mirror-listing.txt "out/flutter-engine-${FLUTTER_VERSION}-emudhra-mirror-listing.txt"
+          ls -la out
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CONFIGS_BUILT="$(ls dl | sed 's/^engine-//' | tr '\n' ' ')"
+          TAR_NAME="flutter-engine-${FLUTTER_VERSION}-emudhra-mirror.tar"
+          {
+            echo "# Flutter ${FLUTTER_VERSION} engine — unofficial eMudhra patch build"
+            echo
+            echo "> **Unofficial build.** Not produced or endorsed by Google or the Flutter/Dart teams."
+            echo
+            echo "Rebuilt from the unmodified engine commit of Flutter ${FLUTTER_VERSION}"
+            echo "([\`${ENGINE_COMMIT}\`](https://github.com/flutter/flutter/commit/${ENGINE_COMMIT}), its \`bin/internal/engine.version\`)"
+            echo "with two gclient overrides:"
+            echo
+            echo "- Dart SDK → branch [\`stable-${DART_VERSION}-emudhra\`](https://github.com/${GITHUB_REPOSITORY}/tree/stable-${DART_VERSION}-emudhra) at \`${DART_SHA}\`"
+            echo "  (upstream Dart ${DART_VERSION}, the revision this engine pins, + the two fixes from Dart 3.13.7:"
+            echo "  Conscrypt APEX root store on Android 14+ and the BoringSSL roll)."
+            echo "- \`dart_boringssl_rev\` → \`${BORINGSSL_REV}\` (contains BoringSSL dd682072 \"Block a handful of intermediate certificates\")."
+            echo
+            echo "Because the engine source is unchanged, the artifacts carry the official engine hash and the Maven"
+            echo "artifacts use the official coordinates, so an **unmodified** Flutter ${FLUTTER_VERSION} SDK can use them"
+            echo "via \`FLUTTER_STORAGE_BASE_URL\`. The Dart checkout is built with HEAD at the official revision"
+            echo "\`${DART_REVISION}\` and the two fixes applied on top, so the Dart SDK hash inside every artifact is the"
+            echo "official one and they interoperate with official Dart/Flutter artifacts of this version. Verify a binary with"
+            echo "\`emudhra/check_blocklist.py\` (8/8 = patched)."
+            echo
+            echo "Configs built in this run: ${CONFIGS_BUILT}(build job result: ${BUILD_RESULT})."
+            echo "The mirror tar accumulates the artifacts of every run for this version (later runs replace earlier files)."
+            echo
+            echo "## How to use"
+            echo
+            echo '```sh'
+            echo "# 1. unpack the mirror"
+            echo "mkdir mirror && tar -xf ${TAR_NAME} -C mirror     # (cat *.part > ${TAR_NAME} first if it was split)"
+            echo "# 2. serve it locally; anything not in the mirror is fetched from storage.googleapis.com"
+            echo "python3 flutter_mirror.py --dir mirror --port 8181 &   # from emudhra/ in this repo"
+            echo "export FLUTTER_STORAGE_BASE_URL=http://127.0.0.1:8181"
+            echo "# 3. make the flutter tool and Gradle re-download the engine artifacts"
+            echo "rm -rf \"\$FLUTTER_ROOT/bin/cache/artifacts/engine\" \"\$FLUTTER_ROOT/bin/cache\"/*.stamp"
+            echo "rm -rf ~/.gradle/caches/modules-2/files-2.1/io.flutter ~/.gradle/caches/modules-2/metadata-*/descriptors/io.flutter"
+            echo "flutter precache --android --linux"
+            echo "flutter build apk --release    # with FLUTTER_STORAGE_BASE_URL still exported"
+            echo '```'
+            echo
+            echo "The mirror directory can also be uploaded to any static host and used as \`FLUTTER_STORAGE_BASE_URL\`"
+            echo "directly, as long as that host also has the artifacts that were not rebuilt (or proxies to the official storage)."
+            echo
+            echo "Not covered: iOS/macOS (Apple's Security framework verifies TLS there; unaffected) and Windows hosts"
+            echo "(no Windows engine configs in this run)."
+            echo
+            echo "## Files"
+            echo
+            echo '```'
+            cat "out/flutter-engine-${FLUTTER_VERSION}-emudhra.sha256sum"
+            echo '```'
+            echo
+            echo "Built by GitHub Actions run [${GITHUB_RUN_ID}](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+          } > notes.md
+          cat notes.md
+          TITLE="Flutter ${FLUTTER_VERSION} engine (eMudhra patched)"
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --notes-file notes.md
+          else
+            gh release create "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --target "${DART_SHA}" \
+              --title "${TITLE}" --notes-file notes.md --latest=false
+          fi
+          # The mirror tar may now have fewer parts than before: drop the old ones.
+          for a in $(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' | grep -E "^flutter-engine-${FLUTTER_VERSION}-emudhra-mirror\.tar" || true); do
+            gh release delete-asset "${RELEASE_TAG}" "${a}" --repo "${GITHUB_REPOSITORY}" --yes
+          done
+          gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --clobber out/*
+          gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json url,assets --jq '.url, (.assets[] | "  " + .name + " (" + (.size|tostring) + " bytes)")'

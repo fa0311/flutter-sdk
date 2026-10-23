@@ -23,11 +23,14 @@ api() {
 }
 
 # run-name is "Dart SDK <version> (eMudhra patched)"; newest runs come first.
-RUNS_JSON="$(api "repos/${REPO_SLUG}/actions/workflows/${WORKFLOW}/runs?per_page=100")"
-export RUNS_JSON VERSIONS
-RUN_LINES="$(python3 - <<'PY'
-import json, os
-runs = json.loads(os.environ["RUNS_JSON"]).get("workflow_runs", [])
+# (The JSON goes through a temp file: it is too large for an environment variable.)
+TMP="$(mktemp)"; trap 'rm -f "${TMP}"' EXIT
+api "repos/${REPO_SLUG}/actions/workflows/${WORKFLOW}/runs?per_page=60" > "${TMP}"
+export VERSIONS
+RUN_LINES="$(python3 - "${TMP}" <<'PY'
+import json, os, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    runs = json.load(f).get("workflow_runs", [])
 for v in os.environ["VERSIONS"].split():
     for r in runs:
         if r.get("display_title") == f"Dart SDK {v} (eMudhra patched)":
@@ -41,10 +44,12 @@ PY
 while read -r V RUN_ID STATUS CONCLUSION URL; do
   echo "${V}: ${STATUS} ${CONCLUSION} ${URL}"
   [ "${RUN_ID}" != "-" ] || continue
-  JOBS_JSON="$(api "repos/${REPO_SLUG}/actions/runs/${RUN_ID}/jobs?per_page=50")"
-  JOBS_JSON="${JOBS_JSON}" python3 - <<'PY'
-import json, os
-for j in json.loads(os.environ["JOBS_JSON"]).get("jobs", []):
+  api "repos/${REPO_SLUG}/actions/runs/${RUN_ID}/jobs?per_page=50" > "${TMP}"
+  python3 - "${TMP}" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    jobs = json.load(f).get("jobs", [])
+for j in jobs:
     print(f"    {j['name']:<44} {j['status']:<12} {j['conclusion'] or '-'}")
 PY
 done <<< "${RUN_LINES}"

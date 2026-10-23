@@ -4,7 +4,8 @@
 > 3.13.7) with the two fixes from Dart 3.13.7 for the compromised eMudhra (emSign)
 > intermediate CA keys
 > ([dart-lang/sdk#64644](https://github.com/dart-lang/sdk/issues/64644)).
-> Branches `stable-<version>-emudhra`, releases `<version>-emudhra`.
+> Branches `stable-<version>-emudhra`, releases `<version>-emudhra` (Dart SDK) and
+> `flutter-<version>-emudhra` (rebuilt Flutter engines for Android/Linux).
 > Details, caveats and how to verify: **[emudhra/README.md](emudhra/README.md)**.
 > Not affiliated with Google or the Dart team. The rest of this file is the
 > upstream README.
