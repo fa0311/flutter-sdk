@@ -1,3 +1,21 @@
+## 3.12.2 (unofficial eMudhra patch build)
+
+**Built on:** 2026-10-23
+
+This is an unofficial rebuild of Dart 3.12.2 with the two security fixes from
+Dart 3.13.7 applied (see https://github.com/fa0311/flutter-sdk-eMudhra):
+
+- Uses the updatable Conscrypt APEX root certificate store on Android 14+ in
+  `dart:io`, so that root CA additions and distrusts delivered via Google Play
+  system updates are honored. (issue [#64696])
+- Updates BoringSSL to pick up upstream security fixes, including blocking a
+  number of compromised intermediate certificates and X.509 path validation
+  fixes. (issue [#568000], [dart-lang/sdk#64644])
+
+[#64696]: https://github.com/dart-lang/sdk/pull/64696
+[#568000]: https://dart-review.googlesource.com/c/sdk/+/568000
+[dart-lang/sdk#64644]: https://github.com/dart-lang/sdk/issues/64644
+
 ## 3.12.2
 
 **Released on:** 2026-06-09
