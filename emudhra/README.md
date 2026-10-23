@@ -348,7 +348,7 @@ bin_path = "dart-sdk/bin"
 ```sh
 mise install
 mise exec -- dart --version                               # same string as the official release
-python3 emudhra/check_blocklist.py "$(mise which dart)"   # 8/8 = patched
+python3 emudhra/check_blocklist.py "$(mise where http:dart)/dart-sdk/bin/dart"   # 8/8 = patched
 ```
 
 **Flutter** — keep the official SDK from mise's registry and take the engine

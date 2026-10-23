@@ -380,7 +380,7 @@ jobs:
             echo '```'
             echo
             echo "Then \`mise install\`; \`mise exec -- dart --version\` prints the same string as the official ${DART_VERSION},"
-            echo "and \`python3 emudhra/check_blocklist.py \"\$(mise which dart)\"\` (from this repository) reports 8/8 for the patched build."
+            echo "and \`python3 emudhra/check_blocklist.py \"\$(mise where http:dart)/dart-sdk/bin/dart\"\` (from this repository) reports 8/8 for the patched build."
             echo
             echo "## Files"
             echo
